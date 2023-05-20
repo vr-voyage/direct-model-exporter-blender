@@ -114,8 +114,8 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
 
         metadata[0] = VOY
         metadata[1] = AGE
-        metadata[2] = float('nan')
-        metadata[3] = float('infinity')
+        metadata[2] = float('infinity')
+        metadata[3] = float('nan')
 
         n_verts = len(verts)
         n_normals = len(normals)
@@ -177,6 +177,10 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
 
     def active_mesh_to_voyage_exr(self, filepath):
         so = bpy.context.active_object
+        modifiers = so.modifiers
+        if len(modifiers) == 0 or type(modifiers[-1]) != bpy.types.TriangulateModifier:
+            modifiers.new(name="Voyage Exporter Triangulation", type='TRIANGULATE')
+
         dep_graph = bpy.context.evaluated_depsgraph_get()
 
         modified_object = so.evaluated_get(dep_graph)
@@ -218,7 +222,7 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
 
     @classmethod
     def poll(cls, context):
-        return context.active_object is not None
+        return context.active_object is not None and context.active_object.type == 'MESH'
 
     def execute(self, context):
         if not self.filepath:
