@@ -12,7 +12,7 @@ bl_info = {
     "location": "Object > (Voyage) Encode active mesh to EXR...",
     "category": "Import-Export",
     "support": "COMMUNITY",
-    "version": (1, 0),
+    "version": (1, 1),
     "blender": (3, 4, 0),
     "warning": "",
     "doc_url": "",
@@ -78,12 +78,10 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         pixels = image.pixels
         n_pixels = len(pixels)
 
-        #self.elapsed_time('Elapsed time generate_exr_with_data (before loop)', timer_start)
         pixels[0:data_size] = data
 
         image.save_render(filepath)
         bpy.data.images.remove(image)
-        #self.elapsed_time('Elapsed time generate_exr_with_data (after save render)', timer_start)
         return True
 
     def fixed_size_array(self, size, default_value = 0):
@@ -171,9 +169,89 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
 
     def set_uv(self, uvs, index, uv):
         uvs[index] = uv
+    
+    def add_uv(self, uvs, uv):
+        self.add_to_list(uvs, [uv[0], uv[1]])
 
     def add_triangle(self, triangles, indices):
         self.add_to_list(triangles, [indices[0], indices[1], indices[2]])
+
+    # FIXME : While this actually works, design-wise, it's broken.
+    # We're passing way too much data to ensure that vertex duplication
+    # works.
+    # So we'll need to have a some State object that handles the
+    # duplication for us at some moment, instead of doing everything
+    # in some random method
+    def set_uv_duplicate_vertex_if_needed(
+        self,
+        previously_found_uvs,
+        uv_list,
+        vertex_index,
+        uv_coordinates,
+        vertices,
+        normals
+        ):
+        # We need to duplicate some vertices sharing
+        # - multiple normals (Auto Smooth)
+        # - multiple UV
+        #
+        # Let's take care of the UV first.
+        # We'll only deal with multiples UV per vertex
+        # on the first UV map for the moment.
+        # (We'll have to deal with multiple UV maps
+        # afterwards for lightmapping... But... Ugh...
+        # let's do it later...)
+        #
+        # Custom normals also will be for another moment.
+        #
+        # We'll tackle this using a stupid method at
+        # the moment, since I can't think about anything
+        # smart.
+        # * We'll preallocate an array of 'len(verts)'
+        # * For each UV found, we'll check if anything was
+        #   added at that array[uvVertexIndex]
+        #   * If nothing is there, we'll a list in the form of :
+        #      [(u, v), vertexIndex] 
+        #   * If some UV are already there:
+        #     * For each [(u,v), vertexIndex]
+        #       * We check if the current (u, v) coordinates are the same
+        #         in which case we use the vertexIndex.
+        #     * If no matching (u, v) are found in the list
+        #       * We add a new vertex in the 'verts' list, with
+        #         the same coordinates as the current uvVertexIndex
+        #       * We add [(u, v), newVertexIndex] to the list
+        
+        # First time we stumble on this UV.
+        # Let's record it, save the UV in the list, and report which vertex index
+        # we used
+        uvs_and_indices = previously_found_uvs[vertex_index]
+        if uvs_and_indices == None:
+            previously_found_uvs[vertex_index] = [[uv_coordinates, vertex_index]]
+            self.set_uv(uv_list, vertex_index, uv_coordinates)
+            return vertex_index
+    
+        for uvs_and_index in uvs_and_indices:
+            # We already encountered that UV
+            # Return the vertex index associated
+            if uv_coordinates == uvs_and_index[0]:
+                return uvs_and_index[1]
+        
+        # We have new UVS
+        vertex = vertices[vertex_index]
+        # FIXME : Find another solution...
+        # We need to duplicate this one too
+        normal = normals[vertex_index]
+        # Preempt the new vertex Index
+        new_vertex_index = len(vertices)
+        # Actually add the new vertex, so that index is valid
+        self.add_vertex(vertices, vertex)
+        self.add_normal(normals, normal)
+        # The UV list must have the same size as the vertex list,
+        # so the added uv should map correctly
+        self.add_uv(uv_list, uv_coordinates)
+        uvs_and_indices.append([uv_coordinates, new_vertex_index])
+        return new_vertex_index
+        
 
     def active_mesh_to_voyage_exr(self, filepath):
         so = bpy.context.active_object
@@ -205,13 +283,25 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
             self.add_normal(out_normals, vertex.normal)
             out_uvs.append((0,0))
 
+        found_uvs = self.fixed_size_array(len(verts), None)
+
         for i in range(len(polys)):
             poly = polys[i]
             indices = poly.vertices
-            self.add_triangle(out_triangles, indices)
+            actual_indices = []
             
             for vert_idx, loop_idx in zip(indices, poly.loop_indices):
-                self.set_uv(out_uvs, vert_idx, uvs[loop_idx].uv)
+                actual_indices.append(
+                    self.set_uv_duplicate_vertex_if_needed(
+                        previously_found_uvs=found_uvs,
+                        uv_list=out_uvs,
+                        vertex_index=vert_idx,
+                        uv_coordinates=uvs[loop_idx].uv,
+                        vertices=out_verts,
+                        normals=out_normals))
+            
+            self.add_triangle(out_triangles, actual_indices)
+            
         
         return self.generate_voyage_exr(
             verts     = out_verts,
@@ -246,4 +336,4 @@ def unregister():
 
 if __name__ == "__main__":
     register()
-
+    
