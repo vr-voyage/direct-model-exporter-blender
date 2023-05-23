@@ -187,10 +187,17 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         previously_found_uvs,
         uv_list,
         vertex_index,
-        uv_coordinates,
+        blender_uv_coordinates,
         vertices,
         normals
         ):
+            
+        # Flip the UV on the X axis, because for some reason
+        # UV are flipped on the X axis (You'd expect Y due
+        # to OpenGL/DirectX issues, but no... it's the Left-Right
+        # axis)
+        uv_coordinates = (1 - blender_uv_coordinates[0], blender_uv_coordinates[1])
+        
         # We need to duplicate some vertices sharing
         # - multiple normals (Auto Smooth)
         # - multiple UV
@@ -296,7 +303,7 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
                         previously_found_uvs=found_uvs,
                         uv_list=out_uvs,
                         vertex_index=vert_idx,
-                        uv_coordinates=uvs[loop_idx].uv,
+                        blender_uv_coordinates=uvs[loop_idx].uv,
                         vertices=out_verts,
                         normals=out_normals))
             
