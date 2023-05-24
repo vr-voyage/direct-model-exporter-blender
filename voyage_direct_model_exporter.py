@@ -13,7 +13,7 @@ bl_info = {
     "location": "Object > (Voyage) Encode active mesh to EXR...",
     "category": "Import-Export",
     "support": "COMMUNITY",
-    "version": (1, 1),
+    "version": (1, 1, 1),
     "blender": (3, 4, 0),
     "warning": "",
     "doc_url": "",
