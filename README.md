@@ -2,6 +2,10 @@
 
 To be used with the [Direct Model Importer for VRChat](https://github.com/vr-voyage/direct-model-importer-vrchat)
 
+## Download
+
+[Download the latest release here](https://github.com/vr-voyage/direct-model-exporter-blender/releases/latest)
+
 ## How to export a Mesh
 
 ![Mesh export screenshot](screenshots/doc_export_mesh.png)
