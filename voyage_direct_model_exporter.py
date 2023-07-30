@@ -13,7 +13,7 @@ bl_info = {
     "location": "Object > (Voyage) Encode active mesh to EXR...",
     "category": "Import-Export",
     "support": "COMMUNITY",
-    "version": (1, 1, 1),
+    "version": (1, 1, 2),
     "blender": (3, 4, 0),
     "warning": "",
     "doc_url": "",
@@ -42,16 +42,24 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         maxlen=255,  # Max internal buffer length, longer would be clamped.
     )
 
+    def print_error(self, message):
+        print(message)
+
     def best_texture_size_for(self, size, max_length_size=2048):
         error_value = [-1, -1]
         square_length = 1
 
-        while square_length < max_length_size:
+        while square_length <= max_length_size:
             if (square_length * square_length) > size:
                 return [square_length, square_length]
             square_length <<= 1
         return error_value
-        
+    
+    def sum_subarrays_lengths(self, arr):
+        return sum(map(len, arr))
+    
+    def align_on_4(self, num):
+        return (num+3)&~3
 
     def generate_exr_with_data(self, data, filepath):
         #timer_start = self.timer_start()
@@ -77,7 +85,6 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         image_settings.exr_codec = 'ZIP'
         
         pixels = image.pixels
-        n_pixels = len(pixels)
 
         pixels[0:data_size] = data
 
@@ -88,7 +95,7 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
     def fixed_size_array(self, size, default_value = 0):
         return [default_value for x in range(size)]
 
-    def generate_voyage_exr(self, verts, normals, uvs, triangles, filepath):
+    def generate_voyage_exr(self, verts, normals, uvs, submeshes_indices, filepath):
         # Coordinates and Triangles accessors
         X = 0
         Y = 1
@@ -100,12 +107,13 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         
         VOY = 0x00564f59
         AGE = 0x00454741
-        VoyageFormatVersion = 2
+        VoyageFormatVersion = 3
         IndexVersion  = 4
         IndexVertices = 8
         IndexNormals  = 9
         IndexUvs      = 10
         IndexIndices  = 11
+        IndexSubmeshesCount = 12
 
         MetadataSize = 64
 
@@ -116,18 +124,33 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         metadata[2] = float('infinity')
         metadata[3] = float('nan')
 
-        n_verts = len(verts)
+        n_verts   = len(verts)
         n_normals = len(normals)
-        n_uvs = len(uvs)
-        n_indices = len(triangles) * 3
+        n_uvs     = len(uvs)
+        n_indices = self.sum_subarrays_lengths(submeshes_indices)
+        n_submeshes = len(submeshes_indices)
 
         metadata[IndexVersion]  = VoyageFormatVersion
         metadata[IndexVertices] = n_verts
         metadata[IndexNormals]  = n_normals
         metadata[IndexUvs]      = n_uvs
         metadata[IndexIndices]  = n_indices
-        
-        data_size = n_verts * 4 + n_normals * 4 + n_uvs * 4 + n_indices
+        metadata[IndexSubmeshesCount] = n_submeshes
+
+        channels_per_color = 4
+
+        print(n_verts)
+        print(n_normals)
+        print(n_uvs)
+        print(n_indices)
+        print(n_submeshes)
+
+        data_size = (
+            n_verts * channels_per_color
+            + n_normals * channels_per_color
+            + n_uvs * channels_per_color
+            + self.align_on_4(n_indices)
+            + n_submeshes * channels_per_color)
         data = self.fixed_size_array(data_size)
         cursor = 0
         for vert in verts:
@@ -148,11 +171,18 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
             data[cursor+2] = 0
             data[cursor+3] = 0
             cursor += 4
-        for triangle in triangles:
-            data[cursor+0] = triangle[A]
-            data[cursor+1] = triangle[B]
-            data[cursor+2] = triangle[C]
-            cursor += 3
+        for submesh_indices in submeshes_indices:
+            for index in submesh_indices:
+                data[cursor] = index
+                cursor += 1
+        cursor = self.align_on_4(cursor)
+        current_start = 0
+        for submesh_indices in submeshes_indices:
+            submesh_indices_count = len(submesh_indices)
+            data[cursor+0] = current_start
+            data[cursor+1] = submesh_indices_count
+            current_start += submesh_indices_count
+            cursor += 4
 
         return self.generate_exr_with_data(
             data = (metadata + data),
@@ -175,7 +205,9 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         self.add_to_list(uvs, [uv[0], uv[1]])
 
     def add_triangle(self, triangles, indices):
-        self.add_to_list(triangles, [indices[0], indices[1], indices[2]])
+        triangles.append(indices[0])
+        triangles.append(indices[1])
+        triangles.append(indices[2])
 
     # FIXME : While this actually works, design-wise, it's broken.
     # We're passing way too much data to ensure that vertex duplication
@@ -256,24 +288,32 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
         
 
     def active_mesh_to_voyage_exr(self, filepath):
-        so = bpy.context.active_object
-        modifiers = so.modifiers
+        active_object = bpy.context.active_object
+        if active_object.type != 'MESH':
+            self.print_error('Active element is not a Mesh')
+            return
+        modifiers = active_object.modifiers
         if len(modifiers) == 0 or type(modifiers[-1]) != bpy.types.TriangulateModifier:
             modifiers.new(name="Voyage Exporter Triangulation", type='TRIANGULATE')
 
         dep_graph = bpy.context.evaluated_depsgraph_get()
 
-        modified_object = so.evaluated_get(dep_graph)
+        modified_object = active_object.evaluated_get(dep_graph)
 
-        verts = modified_object.data.vertices
-        polys = modified_object.data.polygons
-        uvs   = modified_object.data.uv_layers.active.data
+        modified_object_data = modified_object.data
+        verts = modified_object_data.vertices
+        polys = modified_object_data.polygons
+        uvs   = modified_object_data.uv_layers.active.data
 
         out_verts   = []
         out_normals = []
         out_uvs     = []
 
-        out_triangles = []
+        out_indices = []
+        n_materials = len(modified_object_data.materials)
+        for _ in range(n_materials):
+            out_indices.append([])
+            
 
         X = 0
         Y = 1
@@ -290,8 +330,14 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
 
         for i in range(len(polys)):
             poly = polys[i]
+            # Sometimes, Blender will output garbage materials indices.
+            # I have no idea why and how to handle this at the moment.
+            # So, meanwhile, let's just ignore polygons using these materials...
+            if poly.material_index >= n_materials:
+                continue
             indices = poly.vertices
             actual_indices = []
+
             
             # Reversing the winding order, to avoid wrong normals
             for vert_idx, loop_idx in zip(reversed(indices), reversed(poly.loop_indices)):
@@ -304,14 +350,15 @@ class VoyageDirectModelExporter(bpy.types.Operator, ExportHelper):
                         vertices=out_verts,
                         normals=out_normals))
             
-            self.add_triangle(out_triangles, actual_indices)
+            
+            self.add_triangle(out_indices[poly.material_index], actual_indices)
             
         
         return self.generate_voyage_exr(
             verts     = out_verts,
             normals   = out_normals,
             uvs       = out_uvs,
-            triangles = out_triangles,
+            submeshes_indices = out_indices,
             filepath  = filepath)
 
     @classmethod
